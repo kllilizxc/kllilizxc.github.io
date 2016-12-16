@@ -1,0 +1,835 @@
+<html>
+
+<head>
+<title>WebGL Course 1 - original version</title>
+<meta http-equiv="content-type" content="text/html; charset=UTF-8">
+<meta name="viewport" content="user-scalable=no, width=device-width, initial-scale=1, maximum-scale=1">
+
+<link type="text/css" rel="stylesheet" href="materialize/css/materialize.min.css"  media="screen,projection"/>
+<link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+
+<style>
+  body {
+    /* Permalink - use to edit and share this gradient: http://colorzilla.com/gradient-editor/#ffffff+0,f6f6f6+15,ededed+51 */
+  background: radial-gradient(ellipse at center,  #ffffff 0%,#fefefe 62%,#ededed 100%);
+
+  }
+</style>
+
+<script type="text/javascript" src="GLjs/jquery-3.1.1.min.js"></script>
+<script type="text/javascript" src="GLjs/glMatrix-0.9.5.min.js"></script>
+<script type="text/javascript" src="GLjs/webgl-utils.js"></script>
+<script type="text/javascript" src="materialize/js/materialize.min.js"></script>
+<script type="text/javascript" src="GLjs/webgl-obj-loader.js"></script>
+
+<script id="shader-fs" type="x-shader/x-fragment">
+    precision mediump float;
+
+	varying vec3 vLightWeighting;
+  //varying vec2 vTextureCoord;
+  //uniform sampler2D uSampler;
+
+    void main(void) {
+//       vec4 textureColor = texture2D(uSampler, vec2(vTextureCoord.s, vTextureCoord.t));
+        gl_FragColor = vec4(vLightWeighting, 1); //vec4(textureColor.rgb * vLightWeighting, textureColor.a);
+    }
+</script>
+
+<script id="shader-vs" type="x-shader/x-vertex">
+    attribute vec3 aVertexPosition;
+	attribute vec3 aVertexNormal;
+  //attribute vec2 aTextureCoord;
+
+    uniform mat4 uMVMatrix;
+    uniform mat4 uPMatrix;
+	uniform mat3 uNMatrix;
+
+	uniform vec3 uAmbientColor;
+	uniform vec3 uDirectionalColor;
+	uniform vec3 uLightingDirection;
+
+//	varying vec2 vTextureCoord;
+	varying vec3 vLightWeighting;
+
+    void main(void) {
+        gl_Position = uPMatrix * uMVMatrix * vec4(aVertexPosition, 1.0);
+	//	vTextureCoord = aTextureCoord;
+
+		vec3 transformedNormal = uNMatrix * aVertexNormal;
+		float directionalLightWeighting = max(dot(transformedNormal, uLightingDirection), 0.0);
+		vLightWeighting = uAmbientColor + uDirectionalColor * directionalLightWeighting;
+    }
+</script>
+
+
+<script type="text/javascript">
+
+    var gl;
+    function initGL(canvas) {
+        try {
+            gl = canvas.getContext("experimental-webgl");
+            gl.viewportWidth = canvas.width;
+            gl.viewportHeight = canvas.height;
+        } catch (e) {
+        }
+        if (!gl) {
+            alert("Could not initialise WebGL, sorry :-(");
+        }
+    }
+
+
+    function getShader(gl, id) {
+        var shaderScript = document.getElementById(id);
+        if (!shaderScript) {
+            return null;
+        }
+
+        var str = "";
+        var k = shaderScript.firstChild;
+        while (k) {
+            if (k.nodeType == 3) {
+                str += k.textContent;
+            }
+            k = k.nextSibling;
+        }
+
+        var shader;
+        if (shaderScript.type == "x-shader/x-fragment") {
+            shader = gl.createShader(gl.FRAGMENT_SHADER);
+        } else if (shaderScript.type == "x-shader/x-vertex") {
+            shader = gl.createShader(gl.VERTEX_SHADER);
+        } else {
+            return null;
+        }
+
+        gl.shaderSource(shader, str);
+        gl.compileShader(shader);
+
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            alert(gl.getShaderInfoLog(shader));
+            return null;
+        }
+
+        return shader;
+    }
+
+
+    var shaderProgram;
+
+    function initShaders() {
+        var fragmentShader = getShader(gl, "shader-fs");
+        var vertexShader = getShader(gl, "shader-vs");
+
+        shaderProgram = gl.createProgram();
+        gl.attachShader(shaderProgram, vertexShader);
+        gl.attachShader(shaderProgram, fragmentShader);
+        gl.linkProgram(shaderProgram);
+
+        if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+            alert("Could not initialise shaders");
+        }
+
+        gl.useProgram(shaderProgram);
+
+        shaderProgram.vertexPositionAttribute = gl.getAttribLocation(shaderProgram, "aVertexPosition");
+        gl.enableVertexAttribArray(shaderProgram.vertexPositionAttribute);
+
+		shaderProgram.vertexNormalAttribute = gl.getAttribLocation(shaderProgram, "aVertexNormal");
+        gl.enableVertexAttribArray(shaderProgram.vertexNormalAttribute);
+
+        //shaderProgram.vertexCoordAttribute = gl.getAttribLocation(shaderProgram, "aTextureCoord");
+        //gl.enableVertexAttribArray(shaderProgram.vertexCoordAttribute);
+
+        shaderProgram.pMatrixUniform = gl.getUniformLocation(shaderProgram, "uPMatrix");
+        shaderProgram.mvMatrixUniform = gl.getUniformLocation(shaderProgram, "uMVMatrix");
+
+    shaderProgram.nMatrixUniform = gl.getUniformLocation(shaderProgram, "uNMatrix");
+    //shaderProgram.samplerUniform = gl.getUniformLocation(shaderProgram, "uSampler");
+        shaderProgram.ambientColorUniform = gl.getUniformLocation(shaderProgram, "uAmbientColor");
+        shaderProgram.lightingDirectionUniform = gl.getUniformLocation(shaderProgram, "uLightingDirection");
+        shaderProgram.directionalColorUniform = gl.getUniformLocation(shaderProgram, "uDirectionalColor");
+    }
+
+
+    var mvMatrix = mat4.create();
+	var mvMatrixStack = [];
+    var pMatrix = mat4.create();
+
+	function mvPushMatrix() {
+		var copy = mat4.create();
+		mat4.set(mvMatrix, copy);
+		mvMatrixStack.push(copy);
+	}
+
+	function mvPopMatrix() {
+		if(mvMatrixStack.length == 0) {
+			throw "Invalid popMatrix!";
+		}
+		mvMatrix = mvMatrixStack.pop();
+	}
+
+	function degToRad(degrees) {
+		return degrees * Math.PI / 180;
+	}
+
+    function setMatrixUniforms() {
+        gl.uniformMatrix4fv(shaderProgram.pMatrixUniform, false, pMatrix);
+
+        gl.uniformMatrix4fv(shaderProgram.mvMatrixUniform, false, mvMatrix);
+
+		var normalMatrix = mat3.create();
+		mat4.toInverseMat3(mvMatrix, normalMatrix);
+		mat3.transpose(normalMatrix);
+		gl.uniformMatrix3fv(shaderProgram.nMatrixUniform, false, normalMatrix);
+    }
+
+
+    var pyramidVertexPositionBuffer;
+	var pyramidVertexColorBuffer;
+    var cubeVertexPositionBuffer;
+	var cubeVertexColorBuffer;
+	var cubeVertexIndexBuffer;
+	var cubeVertexNormalBuffer;
+
+    function initBuffers() {
+		//pyramidVertexPositionBuffer
+        pyramidVertexPositionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, pyramidVertexPositionBuffer);
+		var vertices = [
+			// Front face
+			 0.0,  1.0,  0.0,
+			-1.0, -1.0,  1.0,
+			 1.0, -1.0,  1.0,
+			// Right face
+			 0.0,  1.0,  0.0,
+			 1.0, -1.0,  1.0,
+			 1.0, -1.0, -1.0,
+			// Back face
+			 0.0,  1.0,  0.0,
+			 1.0, -1.0, -1.0,
+			-1.0, -1.0, -1.0,
+			// Left face
+			 0.0,  1.0,  0.0,
+			-1.0, -1.0, -1.0,
+			-1.0, -1.0,  1.0
+		];
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+        pyramidVertexPositionBuffer.itemSize = 3;
+        pyramidVertexPositionBuffer.numItems = 12;
+
+		//cubeVertexPositionBuffer
+        cubeVertexPositionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexPositionBuffer);
+		vertices = [
+		  // Front face
+		  -1.0, -1.0,  1.0,
+		   1.0, -1.0,  1.0,
+		   1.0,  1.0,  1.0,
+		  -1.0,  1.0,  1.0,
+
+		  // Back face
+		  -1.0, -1.0, -1.0,
+		  -1.0,  1.0, -1.0,
+		   1.0,  1.0, -1.0,
+		   1.0, -1.0, -1.0,
+
+		  // Top face
+		  -1.0,  1.0, -1.0,
+		  -1.0,  1.0,  1.0,
+		   1.0,  1.0,  1.0,
+		   1.0,  1.0, -1.0,
+
+		  // Bottom face
+		  -1.0, -1.0, -1.0,
+		   1.0, -1.0, -1.0,
+		   1.0, -1.0,  1.0,
+		  -1.0, -1.0,  1.0,
+
+		  // Right face
+		   1.0, -1.0, -1.0,
+		   1.0,  1.0, -1.0,
+		   1.0,  1.0,  1.0,
+		   1.0, -1.0,  1.0,
+
+		  // Left face
+		  -1.0, -1.0, -1.0,
+		  -1.0, -1.0,  1.0,
+		  -1.0,  1.0,  1.0,
+		  -1.0,  1.0, -1.0,
+		];
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+        cubeVertexPositionBuffer.itemSize = 3;
+        cubeVertexPositionBuffer.numItems = 24
+
+		//cubeVertexIndexBuffer
+		cubeVertexIndexBuffer = gl.createBuffer();
+		gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeVertexIndexBuffer);
+		var cubeVertexIndices = [
+		  0, 1, 2,      0, 2, 3,    // Front face
+		  4, 5, 6,      4, 6, 7,    // Back face
+		  8, 9, 10,     8, 10, 11,  // Top face
+		  12, 13, 14,   12, 14, 15, // Bottom face
+		  16, 17, 18,   16, 18, 19, // Right face
+		  20, 21, 22,   20, 22, 23  // Left face
+		]
+		gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(cubeVertexIndices), gl.STATIC_DRAW);
+		cubeVertexIndexBuffer.itemSize = 1;
+		cubeVertexIndexBuffer.numItems = 36;
+
+		//cubeVertexNormalBuffer
+		cubeVertexNormalBuffer = gl.createBuffer();
+		gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexNormalBuffer);
+		var vertexNormals = [
+		  // Front face
+		   0.0,  0.0,  1.0,
+		   0.0,  0.0,  1.0,
+		   0.0,  0.0,  1.0,
+		   0.0,  0.0,  1.0,
+
+		  // Back face
+		   0.0,  0.0, -1.0,
+		   0.0,  0.0, -1.0,
+		   0.0,  0.0, -1.0,
+		   0.0,  0.0, -1.0,
+
+		  // Top face
+		   0.0,  1.0,  0.0,
+		   0.0,  1.0,  0.0,
+		   0.0,  1.0,  0.0,
+		   0.0,  1.0,  0.0,
+
+		  // Bottom face
+		   0.0, -1.0,  0.0,
+		   0.0, -1.0,  0.0,
+		   0.0, -1.0,  0.0,
+		   0.0, -1.0,  0.0,
+
+		  // Right face
+		   1.0,  0.0,  0.0,
+		   1.0,  0.0,  0.0,
+		   1.0,  0.0,  0.0,
+		   1.0,  0.0,  0.0,
+
+		  // Left face
+		  -1.0,  0.0,  0.0,
+		  -1.0,  0.0,  0.0,
+		  -1.0,  0.0,  0.0,
+		  -1.0,  0.0,  0.0,
+		];
+		gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexNormals), gl.STATIC_DRAW);
+		cubeVertexNormalBuffer.itemSize = 3;
+		cubeVertexNormalBuffer.numItems = 24;
+    }
+
+
+	var rPyramid = 0;
+	var pyramidRotateSpeed = 0;
+	var rCube = 0;
+	var cubeRotateSpeed = 0;
+
+	var pitch = 0;
+	var pitchRate = 0;
+
+	var yaw = 0;
+	var yawRate = 0;
+
+	var xPos = 0, yPos = 0, zPos = 0;
+
+	var speed = 0;
+
+	var currentlyPressedKeys = {};
+
+	function handleKeyDown(event) {
+		currentlyPressedKeys[event.keyCode] = true;
+
+		if(String.fromCharCode(event.keyCode) == "F") {
+
+		}
+	}
+
+	function handleKeyUp(event) {
+		currentlyPressedKeys[event.keyCode] = false;
+	}
+
+	function handleKeys() {
+	   if (currentlyPressedKeys[33]) {
+		  // Page Up
+		  pitchRate = 0.1;
+		} else if (currentlyPressedKeys[34]) {
+		  // Page Down
+		  pitchRate = -0.1;
+		} else {
+		  pitchRate = 0;
+		}
+
+		if (currentlyPressedKeys[37] || currentlyPressedKeys[65]) {
+		  // Left cursor key or A
+		  yawRate = 0.1;
+		} else if (currentlyPressedKeys[39] || currentlyPressedKeys[68]) {
+		  // Right cursor key or D
+		  yawRate = -0.1;
+		} else {
+		  yawRate = 0;
+		}
+
+		if (currentlyPressedKeys[38] || currentlyPressedKeys[87]) {
+		  // Up cursor key or W
+		  speed = 0.003;
+		} else if (currentlyPressedKeys[40] || currentlyPressedKeys[83]) {
+		  // Down cursor key
+		  speed = -0.003;
+		} else {
+		  speed = 0;
+		}
+	}
+
+    function drawScene() {
+        gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+        mat4.perspective(45, gl.viewportWidth / gl.viewportHeight, 0.1, 1000.0, pMatrix);
+
+		//camera translate
+		mat4.identity(mvMatrix);
+		mat4.translate(mvMatrix, [-xPos, -yPos, -zPos]);
+		mat4.rotate(mvMatrix, degToRad(-pitch), [1, 0, 0]);
+		mat4.rotate(mvMatrix, degToRad(-yaw), [0, 1, 0]);
+
+	/*	//pyramid
+		//translate
+        mat4.translate(mvMatrix, [-1.5, 0.0, -7.0]);
+
+		//rotate
+		mvPushMatrix();
+		mat4.rotate(mvMatrix, degToRad(rPyramid), [0, 1, 0]);
+
+		//set position
+        gl.bindBuffer(gl.ARRAY_BUFFER, pyramidVertexPositionBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, pyramidVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        setMatrixUniforms();
+        gl.drawArrays(gl.TRIANGLES, 0, pyramidVertexPositionBuffer.numItems);
+
+		mvPopMatrix();
+
+		//cube
+        mat4.translate(mvMatrix, [3.0, 0.0, 0.0]);
+
+		//rotate
+		mvPushMatrix();
+		mat4.rotate(mvMatrix, degToRad(rCube), [1, 1, 1]);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexPositionBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, cubeVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+		gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeVertexIndexBuffer);
+        setMatrixUniforms();
+		gl.drawElements(gl.TRIANGLES, cubeVertexIndexBuffer.numItems, gl.UNSIGNED_SHORT, 0);
+
+		//normal
+		gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexNormalBuffer);
+		gl.vertexAttribPointer(shaderProgram.vertexNormalAttribute, cubeVertexNormalBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+		mvPopMatrix();*/
+
+    mat4.translate(mvMatrix, [0.0, -0.8, -2.0]);
+
+    //transform
+    var translateVec = [
+      parseFloat(document.getElementById("translateX").value),
+      parseFloat(document.getElementById("translateY").value),
+      parseFloat(document.getElementById("translateZ").value)
+    ];
+
+    var rotateVec = [
+      parseFloat(document.getElementById("rotateX").value),
+      parseFloat(document.getElementById("rotateY").value),
+      parseFloat(document.getElementById("rotateZ").value)
+    ];
+
+    var scaleVec = [
+      parseFloat(document.getElementById("scaleX").value),
+      parseFloat(document.getElementById("scaleY").value),
+      parseFloat(document.getElementById("scaleZ").value)
+    ];
+
+    mat4.translate(mvMatrix, translateVec);
+    mat4.rotate(mvMatrix, rotateVec[0], [1, 0, 0]);
+    mat4.rotate(mvMatrix, rotateVec[1], [0, 1, 0]);
+    mat4.rotate(mvMatrix, rotateVec[2], [0, 0, 1]);
+    mat4.scale(mvMatrix, scaleVec);
+
+    //mesh
+    for (var i = 0; i < meshes.length; i++) {
+      var mesh = meshes[i];
+      gl.bindBuffer(gl.ARRAY_BUFFER, mesh.vertexBuffer);
+      gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, mesh.vertexBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, mesh.normalBuffer);
+      gl.vertexAttribPointer(shaderProgram.vertexNormalAttribute, mesh.normalBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.indexBuffer);
+      setMatrixUniforms();
+      gl.drawElements(gl.TRIANGLES, mesh.indexBuffer.numItems, gl.UNSIGNED_SHORT, 0);
+    }
+
+		//lighting
+
+		//ambient light color
+		gl.uniform3f(
+			shaderProgram.ambientColorUniform,
+			parseFloat(document.getElementById("ambientR").value),
+			parseFloat(document.getElementById("ambientG").value),
+			parseFloat(document.getElementById("ambientB").value)
+		);
+
+		//directional light direction
+		var lightingDirection = [
+			parseFloat(document.getElementById("lightDirectionX").value),
+			parseFloat(document.getElementById("lightDirectionY").value),
+			parseFloat(document.getElementById("lightDirectionZ").value)
+		];
+
+		var adjustedLD = vec3.create();
+		vec3.normalize(lightingDirection, adjustedLD);
+		vec3.scale(adjustedLD, -1);
+		gl.uniform3fv(shaderProgram.lightingDirectionUniform, adjustedLD);
+
+		//directional light color
+		gl.uniform3f(
+			shaderProgram.directionalColorUniform,
+			parseFloat(document.getElementById("directionalR").value),
+			parseFloat(document.getElementById("directionalG").value),
+			parseFloat(document.getElementById("directionalB").value)
+		);
+    }
+
+	var lastTime = 0;
+	var joggingAngle = 0;
+	function animate() {
+		var timeNow = new Date().getTime();
+		if(lastTime != 0) {
+			var elapsed = timeNow - lastTime;
+
+			rPyramid += (pyramidRotateSpeed * elapsed) / 1000;
+			rCube += (cubeRotateSpeed * elapsed) / 1000;
+
+			if (speed != 0) {
+				xPos -= Math.sin(degToRad(yaw)) * speed * elapsed;
+				zPos -= Math.cos(degToRad(yaw)) * speed * elapsed;
+
+				joggingAngle += elapsed * 0.6;  // 0.6 "fiddle factor" -- makes it feel more realistic :-)
+				yPos = Math.sin(degToRad(joggingAngle)) / 20 + 0.4
+			}
+
+			yaw += yawRate * elapsed;
+			pitch += pitchRate * elapsed;
+		}
+		lastTime = timeNow;
+	}
+
+	function tick() {
+		requestAnimFrame(tick);
+		//handleKeys();
+		drawScene();
+		animate();
+	}
+
+	/*var rotateVelocity = 0.004;
+	var scaleVelocity = 0.08;
+	var translateVelocity = 0.0004;
+
+	function handlePan(ev) {
+		//console.log("pan");
+		//console.log(ev);
+		yaw -= ev.deltaX * rotateVelocity;
+		pitch -= ev.deltaY * rotateVelocity;
+	}
+
+	function handlePinch(ev) {
+		//console.log("pinch");
+		var eps = 0.09;
+		console.log(Math.abs(ev.scale - 1));
+		if(Math.abs(ev.scale - 1) > eps) {
+			zPos += (1 - ev.scale) * scaleVelocity;
+		} else {
+			yPos += ev.deltaY * translateVelocity;
+			xPos -= ev.deltaX * translateVelocity;
+		}
+	}*/
+
+	var touchStartX = [0, 0];
+	var touchStartY = [0, 0];
+	function touchStartHandler(ev) {
+  //  ev.preventDefault();
+		//console.log(ev.touches);
+		for(var i = 0; i < ev.touches.length; i++) {
+			touchStartX[i] = ev.touches[i].clientX;
+			touchStartY[i] = ev.touches[i].clientY;
+		}
+	}
+
+	function sameSign(a, b) {
+    var eps = 0.001;
+		return (a >= -eps && b >= -eps) || (a < eps && b < eps);
+	}
+
+  function clamp(val, min, max) {
+    if(val < min) return min;
+    else if(val > max) return max;
+    else return val;
+  }
+
+	var rotateVelocity = 0.2	;
+	var scaleVelocity = 0.04;
+	var translateVelocity = 0.01;
+
+	function touchMoveHandler(ev) {
+    //ev.preventDefault();
+		var deltaX = [0, 0];
+		var deltaY = [0, 0];
+		for(var i = 0; i < ev.touches.length; i++) {
+			deltaX[i] = ev.touches[i].clientX - touchStartX[i];
+			deltaY[i] = ev.touches[i].clientY - touchStartY[i];
+			//console.log("touch " + i + ": (" + deltaX[i] + ", " + deltaY[i] + ")");
+		}
+
+		if(ev.touches.length === 2) {
+			if(sameSign(deltaX[0], deltaX[1]) || sameSign(deltaY[0], deltaY[1])) {
+				//translate
+				xPos -= Math.max(deltaX[0], deltaX[1]) * translateVelocity;
+        xPos = clamp(xPos, -10, 10);
+				yPos += Math.max(deltaY[0], deltaY[1]) * translateVelocity;
+        yPos = clamp(yPos, -10, 10);
+			} else {
+				//scale
+				var startLen = Math.sqrt(Math.pow(touchStartX[0] - touchStartX[1], 2) + Math.pow(touchStartY[0] - touchStartY[1], 2));
+				//console.log(startLen);
+				var curLen = Math.sqrt(Math.pow(ev.touches[0].clientX - ev.touches[1].clientX, 2) + Math.pow(ev.touches[0].clientY - ev.touches[1].clientY, 2));
+				//console.log(curLen);
+				var deltaLen = curLen - startLen;
+				//console.log(deltaLen);
+				zPos += (1 - deltaLen) * scaleVelocity;
+        zPos = clamp(zPos, -10, 10);
+			}
+		} else if(ev.touches.length === 1) {
+      //ev.preventDefault();
+			//rotate
+			yaw -= deltaX[0] * rotateVelocity;
+			pitch -= deltaY[0] * rotateVelocity;
+		}
+
+		for(var i = 0; i < ev.touches.length; i++) {
+			touchStartX[i] = ev.touches[i].clientX;
+			touchStartY[i] = ev.touches[i].clientY;
+		}
+    ev.preventDefault();
+	}
+
+	function touchEndHandler(ev) {
+		//console.log(ev);
+	}
+
+  var meshes = [];
+  function generateMesh(objStr) {
+    var mesh = new OBJ.Mesh(objStr);
+    OBJ.initMeshBuffers(gl, mesh);
+    meshes.push(mesh);
+    console.log(mesh);
+  }
+
+	function readFile(e) {
+		var file = e.target.files[0];
+		if(!file) {
+			console.log("no file found!");
+			return;
+		}
+		var reader = new FileReader();
+		reader.onload = function(e) {
+			var contents = e.target.result;
+			generateMesh(contents);
+		}
+		reader.readAsText(file);
+	}
+
+	function openFile() {
+		console.log("open file");
+		$('#fileInput').on('change', readFile).click();
+	}
+
+  function resetPos() {
+    xPos = 0;
+    yPos = 0;
+    zPos = 0;
+    pitch = 0;
+    yaw = 0;
+  }
+
+    function webGLStart() {
+        var canvas = document.getElementById("lesson01-canvas");
+        initGL(canvas);
+        initShaders();
+        initBuffers();
+        //initTexture();
+
+        gl.clearColor(0.0, 0.0, 0.0, 0.0);
+        gl.enable(gl.DEPTH_TEST);
+
+		document.onkeydown = handleKeyDown;
+		document.onkeyup = handleKeyUp;
+
+		/*var mc = new Hammer(canvas);
+		mc.get('pinch').set({ enable: true });
+		mc.on("panmove", handlePan);
+		mc.on("pinch", handlePinch);*/
+
+		canvas.addEventListener("touchstart", touchStartHandler, false);
+		canvas.addEventListener("touchmove", touchMoveHandler, false);
+		canvas.addEventListener("touchend", touchEndHandler, false);
+    canvas.onwheel = function(event) { event.preventDefault(); };
+    canvas.onmousewheel = function(event) { event.preventDefault(); };
+        tick();
+    }
+
+</script>
+
+
+</head>
+
+
+<body onload="webGLStart();">
+	<div class="row" style="margin-bottom: 0; position: fixed;">
+		<canvas id="lesson01-canvas" class="col s12 m6" style="border: none; padding: 0;" width="500" height="500"></canvas>
+	</div>
+
+	<div id="option" style="padding-top: 100%; overflow: scroll;">
+    <div class="row" style="padding: 8px; margin-bottom: 0;">
+      <div class="card col s12 m6">
+        <span class="card-title grey-text text-darken-3">Transform</span>
+        <form class="col s12">
+          <p class=" teal-text text-lighten-2">Translate</p>
+          <div class="row">
+            <div class="input-field col s4">
+              <input placeholder="Placeholder" id="translateX" type="text" class="validate" value="0.0">
+              <label for="translateX">X</label>
+            </div>
+            <div class="input-field col s4">
+              <input placeholder="Placeholder" id="translateY" type="text" class="validate" value="0.0">
+              <label for="translateY">Y</label>
+            </div>
+            <div class="input-field col s4">
+              <input placeholder="Placeholder" id="translateZ" type="text" class="validate" value="0.0">
+              <label for="translateZ">Z</label>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+
+          <p class=" teal-text text-lighten-2">Rotate</p>
+          <div class="row">
+            <div class="input-field col s4">
+              <input placeholder="Placeholder" id="rotateX" type="text" class="validate" value="0.0">
+              <label for="rotateX">X</label>
+            </div>
+            <div class="input-field col s4">
+              <input placeholder="Placeholder" id="rotateY" type="text" class="validate" value="0.0">
+              <label for="rotateY">Y</label>
+            </div>
+            <div class="input-field col s4">
+              <input placeholder="Placeholder" id="rotateZ" type="text" class="validate" value="0.0">
+              <label for="rotateZ">Z</label>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+
+          <p class=" teal-text text-lighten-2">Scale</p>
+          <div class="row">
+            <div class="input-field col s4">
+              <input placeholder="Placeholder" id="scaleX" type="text" class="validate" value="1.0">
+              <label for="scaleX">X</label>
+            </div>
+            <div class="input-field col s4">
+              <input placeholder="Placeholder" id="scaleY" type="text" class="validate" value="1.0">
+              <label for="scaleY">Y</label>
+            </div>
+            <div class="input-field col s4">
+              <input placeholder="Placeholder" id="scaleZ" type="text" class="validate" value="1.0">
+              <label for="scaleZ">Z</label>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+
+		<div class="row" style="padding: 8px; margin-bottom: 0;">
+			<div class="card col s12 m6">
+				<span class="card-title grey-text text-darken-3">Directional Light</span>
+				<form class="col s12">
+					<p class=" teal-text text-lighten-2">Direction</p>
+					<div class="row">
+						<div class="input-field col s4">
+							<input placeholder="Placeholder" id="lightDirectionX" type="text" class="validate" value="-0.25">
+							<label for="lightDirectionX">X</label>
+						</div>
+						<div class="input-field col s4">
+							<input placeholder="Placeholder" id="lightDirectionY" type="text" class="validate" value="-0.25">
+							<label for="lightDirectionY">Y</label>
+						</div>
+						<div class="input-field col s4">
+							<input placeholder="Placeholder" id="lightDirectionZ" type="text" class="validate" value="-0.1">
+							<label for="lightDirectionZ">Z</label>
+						</div>
+					</div>
+
+					<div class="divider"></div>
+
+					<p class=" teal-text text-lighten-2">Color</p>
+					<div class="row">
+						<div class="input-field col s4">
+							<input placeholder="Placeholder" id="directionalR" type="text" class="validate" value="0.8">
+							<label for="directionalR">R</label>
+						</div>
+						<div class="input-field col s4">
+							<input placeholder="Placeholder" id="directionalG" type="text" class="validate" value="0.8">
+							<label for="directionalG">G</label>
+						</div>
+						<div class="input-field col s4">
+							<input placeholder="Placeholder" id="directionalB" type="text" class="validate" value="0.8">
+							<label for="directionalB">B</label>
+						</div>
+					</div>
+				</form>
+			</div>
+		</div>
+
+		<div class="row" style="padding: 8px; margin-bottom: 0;">
+			<div class="card col s12 m6">
+				<span class="card-title grey-text text-darken-3">Ambient Light</span>
+				<form class="col s12">
+					<p class=" teal-text text-lighten-2">Color</p>
+					<div class="row">
+						<div class="input-field col s4">
+							<input placeholder="Placeholder" id="ambientR" type="text" class="validate" value="0.4">
+							<label for="ambientR">R</label>
+						</div>
+						<div class="input-field col s4">
+							<input placeholder="Placeholder" id="ambientG" type="text" class="validate" value="0.4">
+							<label for="ambientG">G</label>
+						</div>
+						<div class="input-field col s4">
+							<input placeholder="Placeholder" id="ambientB" type="text" class="validate" value="0.4">
+							<label for="ambientB">B</label>
+						</div>
+					</div>
+				</form>
+			</div>
+		</div>
+
+    <a class="btn-floating btn-large waves-effect waves-light red" onclick="openFile()" style="position: fixed; bottom: 16px; right: 16px;"><i class="material-icons">add</i></a>
+		<a class="btn-floating btn-large waves-effect waves-light teal" onclick="resetPos()" style="position: fixed; bottom: 88px; right: 16px;">R</a>
+		<input type="file" id="fileInput" style="display: none;">
+	</div>
+</body>
+
+</html>
