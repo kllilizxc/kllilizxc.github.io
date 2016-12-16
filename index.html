@@ -688,7 +688,11 @@
 		canvas.addEventListener("touchend", touchEndHandler, false);
     canvas.onwheel = function(event) { event.preventDefault(); };
     canvas.onmousewheel = function(event) { event.preventDefault(); };
-        tick();
+
+    $.get('LibertStatue.obj', function(data) {
+      alert(data);
+    });
+    tick();
     }
 
 </script>
