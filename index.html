@@ -690,7 +690,7 @@
     canvas.onmousewheel = function(event) { event.preventDefault(); };
 
     $.get('LibertStatue.obj', function(data) {
-      alert(data);
+      generateMesh(data);
     });
     tick();
     }
